@@ -1,0 +1,27 @@
+name: Auto Scrape and Upload to cPanel
+
+on:
+  schedule:
+    - cron: '0 */2 * * *' # اجرای خودکار هر 2 ساعت یک‌بار
+  workflow_dispatch: # افزودن دکمه اجرای دستی برای تست
+
+jobs:
+  update-sub:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Libraries
+        run: pip install requests beautifulsoup4
+
+      - name: Run Scraper and Upload
+        env:
+          WEBHOOK_URL: ${{ secrets.WEBHOOK_URL }}
+          WEBHOOK_TOKEN: ${{ secrets.WEBHOOK_TOKEN }}
+        run: python scraper.py

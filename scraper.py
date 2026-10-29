@@ -10,14 +10,19 @@ from urllib.parse import quote
 CHANNELS = [
     "freeVPNjd"
 ]
-CUSTOM_REMARK = "@Rooma_Net"  # نامی که روی کانفیگ‌ها ثبت می‌شود
+CUSTOM_REMARK = "@Rooma_Net"
 # ==========================================
 
-# فقط استخراج پروتکل‌های VLESS و Trojan
 PROTOCOLS = ("vless://", "trojan://")
 
-HEADERS = {
+# هدر مرورگر برای باز کردن تلگرام
+TG_HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
+}
+
+# هدر اختصاصی کلاینت v2rayNG برای دریافت کانفیگ خام از سرورهای حساس سابسکریپشن
+SUB_HEADERS = {
+    'User-Agent': 'v2rayNG/1.8.19'
 }
 
 IGNORED_DOMAINS = (
@@ -28,11 +33,14 @@ IGNORED_DOMAINS = (
 IGNORED_EXTENSIONS = (".apk", ".exe", ".dmg", ".zip", ".rar", ".jpg", ".jpeg", ".png", ".gif", ".mp4")
 
 def is_valid_sub_url(url):
-    """بررسی معتبر بودن لینک سابسکریپشن"""
+    """بررسی معتبر بودن لینک سابسکریپشن و حذف لینک‌های ثبت‌نام سایت‌ها"""
     url_lower = url.lower()
     if any(domain in url_lower for domain in IGNORED_DOMAINS):
         return False
     if url_lower.endswith(IGNORED_EXTENSIONS):
+        return False
+    # نادیده گرفتن صفحات ثبت‌نام و تبلیغاتی پنل‌ها
+    if "/#/register" in url_lower or "/#/login" in url_lower or url_lower.endswith("/aff"):
         return False
     return True
 
@@ -60,13 +68,15 @@ def clean_and_extract_configs(text):
     return configs
 
 def fetch_configs_from_sub(url):
-    """دانلود لینک سابسکریپشن و فیلتر کردن VLESS و Trojan"""
+    """دانلود لینک سابسکریپشن با یوزر ایجنت v2rayNG و فیلتر کردن VLESS و Trojan"""
     configs = set()
     try:
-        res = requests.get(url, headers=HEADERS, timeout=12, allow_redirects=True)
+        # اگر لینک پارامتر clash داشت، آن را حذف می‌کنیم تا کانفیگ استاندارد V2Ray بدهد
+        clean_url = re.sub(r'[?&]clash=[^&]+', '', url)
+        
+        res = requests.get(clean_url, headers=SUB_HEADERS, timeout=12, allow_redirects=True)
         if res.status_code == 200:
             content = res.text.strip()
-            # بررسی اینکه آیا محتوا Base64 است یا متن باز
             if not any(p in content for p in ("vless://", "vmess://", "trojan://", "ss://", "hy2://")):
                 decoded = decode_base64(content)
                 if decoded:
@@ -83,7 +93,7 @@ def scrape_channel(channel):
     sub_links = set()
     
     try:
-        res = requests.get(url, headers=HEADERS, timeout=15)
+        res = requests.get(url, headers=TG_HEADERS, timeout=15)
         soup = BeautifulSoup(res.text, 'html.parser')
         message_wraps = soup.find_all('div', class_='tgme_widget_message_wrap')
         
@@ -124,13 +134,11 @@ def deduplicate_and_rename(configs, custom_name):
     seen_keys = set()
 
     for cfg in configs:
-        # جدا کردن بخش اصلی کانفیگ از نام قبلی آن (قبل از #)
         base_part = cfg.split('#')[0].strip()
         if base_part and base_part not in seen_keys:
             seen_keys.add(base_part)
             unique_bases.append(base_part)
 
-    # تغییر نام و شماره‌گذاری مرتب کانفیگ‌ها
     renamed_list = []
     for index, base_part in enumerate(unique_bases, start=1):
         new_remark = f"{custom_name} {index}"
@@ -141,23 +149,24 @@ def deduplicate_and_rename(configs, custom_name):
 
 def upload_to_cpanel(raw_text, b64_text):
     """ارسال مستقیم کانفیگ‌ها به فایل update.php در هاست سی‌پنل"""
-    webhook_url = os.environ.get("WEBHOOK_URL")
-    webhook_token = os.environ.get("WEBHOOK_TOKEN")
+    webhook_url = os.environ.get("WEBHOOK_URL", "").strip()
+    webhook_token = os.environ.get("WEBHOOK_TOKEN", "").strip()
     
     if not webhook_url or not webhook_token:
         raise ValueError("[-] WEBHOOK_URL or WEBHOOK_TOKEN is not set in GitHub Secrets!")
         
     headers = {
-        "Authorization": f"Bearer {webhook_token}",
+        "X-Webhook-Token": webhook_token,
         "Content-Type": "application/json",
-        "User-Agent": HEADERS['User-Agent']
+        "User-Agent": TG_HEADERS['User-Agent']
     }
     payload = {
+        "token": webhook_token,  # ارسال توکن در بدنه JSON برای دور زدن محدودیت هدر سی‌پنل
         "raw": raw_text,
         "b64": b64_text
     }
     
-    print(f"[*] Uploading to {webhook_url}...")
+    print(f"[*] Uploading to cPanel...")
     res = requests.post(webhook_url, json=payload, headers=headers, timeout=25)
     print(f"[*] Server Response ({res.status_code}): {res.text}")
     res.raise_for_status()

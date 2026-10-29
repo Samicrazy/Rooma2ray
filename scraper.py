@@ -3,7 +3,7 @@ import re
 import base64
 import requests
 from bs4 import BeautifulSoup
-from urllib.parse import quote
+from urllib.parse import quote, urlparse
 
 # ==========================================
 # تنظیمات کانال‌ها و نام اختصاصی کانفیگ‌ها
@@ -15,12 +15,10 @@ CUSTOM_REMARK = "@Rooma_Net"
 
 PROTOCOLS = ("vless://", "trojan://")
 
-# هدر مرورگر برای باز کردن تلگرام
 TG_HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
 }
 
-# هدر اختصاصی کلاینت v2rayNG برای دریافت کانفیگ خام از سرورهای حساس سابسکریپشن
 SUB_HEADERS = {
     'User-Agent': 'v2rayNG/1.8.19'
 }
@@ -33,19 +31,16 @@ IGNORED_DOMAINS = (
 IGNORED_EXTENSIONS = (".apk", ".exe", ".dmg", ".zip", ".rar", ".jpg", ".jpeg", ".png", ".gif", ".mp4")
 
 def is_valid_sub_url(url):
-    """بررسی معتبر بودن لینک سابسکریپشن و حذف لینک‌های ثبت‌نام سایت‌ها"""
     url_lower = url.lower()
     if any(domain in url_lower for domain in IGNORED_DOMAINS):
         return False
     if url_lower.endswith(IGNORED_EXTENSIONS):
         return False
-    # نادیده گرفتن صفحات ثبت‌نام و تبلیغاتی پنل‌ها
     if "/#/register" in url_lower or "/#/login" in url_lower or url_lower.endswith("/aff"):
         return False
     return True
 
 def decode_base64(data):
-    """رمزگشایی محتوای Base64"""
     try:
         data = data.strip()
         missing_padding = len(data) % 4
@@ -56,7 +51,6 @@ def decode_base64(data):
         return ""
 
 def clean_and_extract_configs(text):
-    """استخراج کانفیگ‌های VLESS و Trojan از متن"""
     configs = set()
     for line in text.splitlines():
         line = line.strip()
@@ -68,12 +62,9 @@ def clean_and_extract_configs(text):
     return configs
 
 def fetch_configs_from_sub(url):
-    """دانلود لینک سابسکریپشن با یوزر ایجنت v2rayNG و فیلتر کردن VLESS و Trojan"""
     configs = set()
     try:
-        # اگر لینک پارامتر clash داشت، آن را حذف می‌کنیم تا کانفیگ استاندارد V2Ray بدهد
         clean_url = re.sub(r'[?&]clash=[^&]+', '', url)
-        
         res = requests.get(clean_url, headers=SUB_HEADERS, timeout=12, allow_redirects=True)
         if res.status_code == 200:
             content = res.text.strip()
@@ -87,7 +78,6 @@ def fetch_configs_from_sub(url):
     return configs
 
 def scrape_channel(channel):
-    """اسکرپ کردن نسخه وب کانال تلگرام"""
     url = f"https://t.me/s/{channel}"
     found_configs = set()
     sub_links = set()
@@ -128,8 +118,31 @@ def scrape_channel(channel):
             
     return found_configs
 
+def get_country_flag(config_str):
+    """استخراج آدرس سرور و تشخیص پرچم کشور مربوطه"""
+    try:
+        # استخراج آدرس هاست/آی‌پی بعد از @ یا //
+        match = re.search(r'://(?:[^@]+@)?([^:/?#]+)', config_str)
+        if not match:
+            return "🌐"
+        
+        host = match.group(1)
+        
+        # استفاده از سرویس رایگان ip-api برای تشخیص کشور بر اساس آدرس یا دامنه
+        res = requests.get(f"http://ip-api.com/json/{host}?fields=countryCode", timeout=3)
+        if res.status_code == 200:
+            data = res.json()
+            code = data.get("countryCode")
+            if code and len(code) == 2:
+                # تبدیل کد دو حرفی کشور (مثل DE یا US) به ایموجی پرچم
+                return ''.join(chr(ord(c) + 127397) for c in code.upper())
+    except Exception:
+        pass
+    
+    return "🌐" # پرچم پیش‌فرض در صورت عدم موفقیت
+
 def deduplicate_and_rename(configs, custom_name):
-    """حذف کانفیگ‌های تکراری و تغییر نام به @Rooma_Net"""
+    """حذف تکراری‌ها، تشخیص کشور و تغییر نام به همراه پرچم"""
     unique_bases = []
     seen_keys = set()
 
@@ -139,16 +152,17 @@ def deduplicate_and_rename(configs, custom_name):
             seen_keys.add(base_part)
             unique_bases.append(base_part)
 
+    print("[*] Detecting country flags for configs...")
     renamed_list = []
     for index, base_part in enumerate(unique_bases, start=1):
-        new_remark = f"{custom_name} {index}"
+        flag = get_country_flag(base_part)
+        new_remark = f"{custom_name} {flag} {index}"
         encoded_remark = quote(new_remark)
         renamed_list.append(f"{base_part}#{encoded_remark}")
 
     return renamed_list
 
 def upload_to_cpanel(raw_text, b64_text):
-    """ارسال مستقیم کانفیگ‌ها به فایل update.php در هاست سی‌پنل"""
     webhook_url = os.environ.get("WEBHOOK_URL", "").strip()
     webhook_token = os.environ.get("WEBHOOK_TOKEN", "").strip()
     
@@ -161,7 +175,7 @@ def upload_to_cpanel(raw_text, b64_text):
         "User-Agent": TG_HEADERS['User-Agent']
     }
     payload = {
-        "token": webhook_token,  # ارسال توکن در بدنه JSON برای دور زدن محدودیت هدر سی‌پنل
+        "token": webhook_token,
         "raw": raw_text,
         "b64": b64_text
     }
